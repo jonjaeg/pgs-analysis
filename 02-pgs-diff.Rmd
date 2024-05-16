@@ -1,0 +1,487 @@
+---
+title: "pgs-diff"
+author: '`r Sys.info()["user"]`'
+date: "`r Sys.Date()`"
+output:
+  rmdformats::robobook:
+    self_contained: true
+    thumbnails: false
+    lightbox: true
+    gallery: true
+    highlight: tango
+    code_folding: hide
+params:
+  input_file1: "output/example.1000genomes.scores.filtered.txt"
+  input_file2: "output/example.hrc.scores.filtered.txt"
+  coverage_input_file1: "input/example.1000genomes.coverage.txt"
+  coverage_input_file2: "input/example.hrc.coverage.txt"
+---
+
+Version: 1.0
+
+# Introduction
+This document is to compare  different Polygenic Scores (PGS). It compares two files containing multiple Polygenic Scores and produces a density map, calculates the pearson correlation coefficient and plots a histogram where the obtained correlation coefficient are plotted according to their occurrences (countings).
+
+However, from this analysis you cannot say which PGS is more suitable for the analysis. You can only see if there are differences or not.
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r packages, echo = FALSE, include=F} 
+
+library(tidyr) 
+library(dplyr)
+library(ggplot2)
+library(DT)
+```
+
+
+
+```{r function get_unique_number}
+get_unique_number <- function(a_data, a_column){
+  # a_column --> input as string! e.g "sample"
+  count_value <- a_data %>% 
+    select(all_of(a_column)) %>%
+    unique() %>%
+    nrow()
+  return (count_value)
+  
+  }
+```
+
+
+
+```{r string_sclicing_of_input}
+reverse_string_until_pattern_func <- function(input_string) {
+  # Find the last index of "/"
+  last_pattern_index_begin <- max(gregexpr("/", input_string)[[1]]) # pattern is "/"
+  # print(last_slash_index)
+  last_pattern_index_end <- max(gregexpr("_", input_string)[[1]]) # pattern is "_"
+  if (last_pattern_index_end <= last_pattern_index_begin) {
+    last_pattern_index_end <- nchar(input_string) + 1
+  }
+  
+  
+  # Return the substring from the last "/" to the end of the input string
+  output_string <- substr(input_string, last_pattern_index_begin + 1, last_pattern_index_end - 1 )
+  # output_string <- substr(input_string, last_pattern_index_begin + 1, nchar(input_string))
+  # print(nchar(input_string))
+  return(output_string)
+}
+```
+
+
+
+<!-- read files that are specified in parameters at the top of the document --> 
+
+```{r input_files, echo=FALSE}
+scores01 <- read.csv(params$input_file1)
+scores02 <- read.csv(params$input_file2)
+```
+
+
+# Input check
+Simple check in order to be sure if the two input files are correct.
+
+Input Files:
+
+  - File A: ***`r params$input_file1` *** 
+  - File B: ***`r params$input_file2` ***
+
+
+
+
+<!-- check of input files --> 
+
+## File check
+
+Displays the first few lines of our input files.
+```{r head01, echo=F}
+datatable(head(scores01, caption = paste('Table 1.1: Header of', params$input_file1)))
+datatable(head(scores02, caption = paste('Table 1.2: Header of', params$input_file2)))
+```
+
+
+## Merging of files and intersection of samples and PGS
+In order to compare the two files we have to make sure they share data  (We can only spot differences if data is available in *both* files e.g the if a specific sample-number or PGS is in File A but not in File B, comparison is not possible )
+
+
+<!--
+- Intersection of PGS: **` number_PGS_intersect` **
+Formatting into tidyr-format 
+This makes data easier to handle for further analysis.
+-->
+
+
+```{r scores01 formatting, echo=F}
+formated_scores01 <- gather(scores01, key = "PGS_number", value = "PGS_score1", 2:ncol(scores01) ) 
+# gather() creates a formatted dataframe. the columns 2 to n are transposed into the new key-value pair (PGS-number and PGS-score). This means two new columns (PGS-number and PGS-score) are created and the corresponding values new formatted
+#head(formated_scores01)
+```
+<!-- the same for scores02 -->
+```{r scores 02 formatting, echo=F}
+formated_scores02 <- gather(scores02, key ="PGS_number", value = "PGS_score2", 2:ncol(scores02))
+```
+
+<!--
+## inner-join function to merge the two dataframes
+if the two variables (sample and PGS_number) have no value in BOTH variables, they are excluded
+-->
+
+```{r join of PGS_files, echo=FALSE}
+merged_scores <- inner_join(formated_scores01, formated_scores02, by = c("sample" = "sample", "PGS_number" = "PGS_number"))
+#datatable(merged_scores)
+```
+
+```{r sample and PGS calculation}
+
+number_samples_file01 <- get_unique_number(scores01, 'sample')
+number_samples_file02 <- get_unique_number(scores02, 'sample')
+number_samples_intersect <- get_unique_number(merged_scores, 'sample')
+
+number_PGS_file01 <- get_unique_number(formated_scores01, 'PGS_number')
+number_PGS_file02 <- get_unique_number(formated_scores02, 'PGS_number')
+number_PGS_intersect <- get_unique_number(merged_scores, 'PGS_number')
+
+```
+
+Number of Samples  | Number of PGS 
+--- | --- 
+- Samples in *`r params$input_file1`* :  **`r number_samples_file01` ** | - PGS in *`r params$input_file1`* :  **`r number_PGS_file01` **
+- Samples in *`r params$input_file2`* :  **`r number_samples_file02` ** | - PGS in *`r params$input_file2`* :  **`r number_PGS_file02` **
+- Intersection of samples: **`r number_samples_intersect` ** | - Intersection of PGS: **`r number_PGS_intersect` **
+
+
+<!--
+## Calculation of Pearson Correlation coefficient
+
+in order to calculate correlation coefficient, it is necessary to check if the sample variance of the two variables == 0. If this is the case (very unlikely) there would be a division trough zero -> forbidden! 
+-->
+
+```{r variance check}
+#create table with all variances calculated and put into new columns (var1 of `r params$input_file1` and var2 of `r params$input_file2`)
+merged_scores_var <- merged_scores %>%
+  group_by(PGS_number) %>%
+  mutate(var1 = var(PGS_score1 ,na.rm=T), var2 = var(PGS_score2, na.rm=T))
+
+
+#create table with PGS_scores where variance == 0
+merged_scores_zero_var <- merged_scores_var %>%
+  filter(var1 == 0 | var2 ==0) 
+
+#print(head(merged_scores_zero_var))
+#print(tail(merged_scores_zero_var))
+
+
+
+#create table where all PGS-scores where variance ==0 are excluded.
+merged_scores_var_numeric <- merged_scores_var %>%
+  filter(var1 != 0 & var2 !=0)
+
+
+#print(head(merged_scores_var_numeric))
+#print(tail(merged_scores_var_numeric))
+
+
+
+#move on with var==0 excluded data, as there would be divison error when calculating r_pearson.
+merged_scores <- merged_scores_var_numeric
+
+```
+
+
+# Pearson Correlation
+
+
+```{r pearson correlation, echo=F}
+correlation <- cor(merged_scores[,c("PGS_score1", "PGS_score2")], use = "complete.obs", method = "pearson")
+#head(correlation)
+#summary(lm(PGS_score1 ~ PGS_score2, merged_scores))
+
+```
+
+<!--
+## Scatterplot of the two different PGS-scores
+-->
+
+```{r Scatterplot of PGS_scores, echo=F}
+#plot(merged_scores$PGS_score1, merged_scores$PGS_score2)
+
+```
+
+
+# 2d Density plot of PGS
+
+The density plot represents the distribution of the different Polygenic Scores. 
+It counts the number of Scores in a pixel range and colors the pixels corresponding to number of counts.
+
+
+
+```{r heatmap PGS_scores, echo=F}
+ggplot(merged_scores, aes(x=PGS_score1, y=PGS_score2)) + 
+  geom_bin2d(bins = 70) +
+  scale_fill_continuous(low="lightblue", high="#0000FF") +
+  labs(x=paste("PGS  of: ", reverse_string_until_pattern_func(params$input_file1)) , y=paste("PGS of: ", reverse_string_until_pattern_func(params$input_file2))) +
+ theme(legend.position = "right") +
+  theme_bw()
+
+#paste() function for concatenate strings
+```
+
+
+<!-- 
+## Normalization of data
+-->
+
+
+```{r group_by, echo=F}
+# merged_scores with normalized z-values
+merged_scores02 <- merged_scores %>%
+  group_by(PGS_number) %>%
+  mutate(z_value1 = (PGS_score1 - mean(PGS_score1, na.rm=T))/sd(PGS_score1, na.rm=T), 
+         z_value2 = (PGS_score2 - mean(PGS_score2, na.rm=T))/sd(PGS_score2, na.rm=T),
+         z_mean1 = mean(PGS_score1, na.rm=T))
+#head(merged_scores02)
+```
+
+```{r filter}
+#merged_scores02 %>% filter(z_value1< -1000000)
+```
+
+
+# Scatterplot and Density plot of z-values (normalized PGS-scores)
+
+In order to compare the two files, it is necessary to normalize the Polygenic Scores ( = z-value), which is again plotted against each other.
+
+```{r scatter and density plot}
+# create general ggplot
+p <- merged_scores02 %>%
+  ggplot(mapping = aes(x = z_value1,
+                           y = z_value2))
+
+# add points to plot = scatterplot
+scatter_p <- p + 
+  geom_point() +
+  labs(x=paste("z-value of: ", reverse_string_until_pattern_func(params$input_file1)), y=paste("z-value of: ", reverse_string_until_pattern_func(params$input_file2))) +
+  theme_bw()
+# print(scatter_p)
+
+
+# add density2d to plot = density2d plot
+density_p <- p +
+  geom_bin2d(bins = 70) +
+  geom_abline(intercept = 0, slope = 1, color="#0000FF", linetype="dotted")+
+  scale_fill_continuous(low="lightblue", high="#0000FF") +
+  labs(x=paste("z-value of: ", reverse_string_until_pattern_func(params$input_file1)), y=paste("z-value of: ", reverse_string_until_pattern_func(params$input_file2))) +
+  theme_bw()
+print(density_p)
+
+
+```
+
+
+# Calculation of pearson correlation coefficient (r_pearson) grouped by PGS_number
+The Pearson correlation coefficient is calculated within a PGS_number (e.g only within PGS000001, and not the global mean or global sample variance).
+
+
+```{r pearson grouped by PGS_number}
+# datatable(head(merged_scores))
+
+# merged_scores with r pearson grouped by PGS_number
+merged_scores03 <- merged_scores %>% 
+  group_by(PGS_number) %>%
+  mutate(r_pearson = cor(PGS_score1, PGS_score2, use="complete.obs", method = "pearson"))
+datatable(head(merged_scores03))
+```
+
+```{r unique_r_pearson}
+uniq_merged_scores03 <-  unique(merged_scores03[c("PGS_number", "r_pearson")])
+datatable(uniq_merged_scores03)
+```
+
+### count of r_pearson exactely equal to 1
+
+```{r pearson equal to 1}
+r_pearson_count_equals_1 <- uniq_merged_scores03 %>% filter(r_pearson == 1.0) %>% nrow()
+print(r_pearson_count_equals_1)
+```
+
+# Histogram of r_pearson corresponding to the PGS_number
+The histogram shows the value of the pearson correlation coefficient on the x-axis and the counts the number of times it occurs in the data.
+
+
+```{r histogram of r_pearson}
+# count of r_pearson
+all_r_pearson_count <- uniq_merged_scores03 %>% nrow()
+all_r_pearson_count_form <- format(all_r_pearson_count, big.mark= ",", scientific =FALSE)
+
+# coutnt of r_pearson >= 0.9
+r_pearson_count <- uniq_merged_scores03 %>% filter(r_pearson >= 0.9) %>% nrow()
+r_pearson_count_form <- format(r_pearson_count, big.mark= ",", scientific =FALSE)
+
+# perecentage of r_pearson >= 0.9
+r_pearson_percent <- round(r_pearson_count/all_r_pearson_count*100, digits = 2)
+r_pearson_percent_form <- format(r_pearson_percent, big.mark= ",", scientific =FALSE)
+
+f <- ggplot(uniq_merged_scores03, aes(x = r_pearson))
+
+hist <- f + geom_histogram(binwidth=0.01, fill="lightblue", color="#e9ecef", alpha = 0.9) +
+  scale_x_continuous(lim = c(NA , NA), breaks = c(0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0)) +
+  ylab("count")+
+  geom_vline(xintercept = 0.9, linetype = "dashed") +
+  annotate(geom = 'text', label = paste0(" r_pearson \u2265 0.9: " ,r_pearson_count_form," of ", all_r_pearson_count_form, " (", r_pearson_percent_form, " %)") ,  x = -Inf , y = Inf, hjust = 0 , vjust = 1.25) +
+  theme_bw()
+
+print(hist)
+```
+
+# Sorting of r_pearson (ascending order)
+The pearson correlation coefficient as a measure of correlation between two variables. It ranges from 0 to 1, meaning no correlation (r = 0) and perfect correlation (r = 1). The lower values therefore represent the PGS's where almost no correlation is to be seen. 
+
+
+```{r ordering of r_pearson, echo=F}
+ordered_scores03 <- uniq_merged_scores03[order(uniq_merged_scores03$r_pearson), ]
+datatable(ordered_scores03)
+```
+
+# Comparison of coverage
+
+In order to make sure that the correlation coefficient is not biased because of differences in the coverage of the samples, comparison is also made between the coverage of the two files (extra input files).
+
+Input of corresponding coverage files to check for differences in PGS coverage.
+
+```{r input coverage}
+coverage01 <- read.csv(params$coverage_input_file1)
+coverage02 <- read.csv(params$coverage_input_file2)
+
+```
+
+
+Input Files:
+
+  - coverage of File A: ***`r params$coverage_input_file1` *** 
+  - coverage of File B: ***`r params$coverage_input_file2` ***
+
+
+
+```{r join of coverage files}
+coverage_extracted01 <- coverage01 %>% 
+  select("score", "coverage") %>%
+  rename("coverage_of_file01" = "coverage")
+
+coverage_extracted02 <- coverage02 %>% 
+  select("score", "coverage") %>%
+  rename("coverage_of_file02" = "coverage")
+  
+merged_coverage <- inner_join(coverage_extracted01, coverage_extracted02, by = c("score" = "score"))
+datatable((merged_coverage))
+```
+
+```{r extract variants_total of coverage_files}
+# variants_total should be the same for both coverage_files as the PGS that are compared should be the same and therefore "build" of the same number of variants
+variants_coverage_file <- coverage01 %>%
+  select("score", "variants_total")
+
+datatable(head(variants_coverage_file))
+```
+
+
+```{r inner_join r_pearson with variants_total}
+variants_r_pearson_data <- inner_join(uniq_merged_scores03, variants_coverage_file, by = c("PGS_number" = "score"))
+
+datatable(head(variants_r_pearson_data))
+p <- variants_r_pearson_data %>% 
+  ggplot(mapping = aes(x = variants_total, 
+                       y = r_pearson))
+
+
+# scatter plot
+scatter_p <- p +
+  geom_point() +
+  labs(x= paste("number of variants per PGS"), y=paste("r_pearson")) +
+  theme_bw()
+print(scatter_p)
+
+# density (= geom_bin2d) plot
+density_p <- p +
+  geom_bin2d(bins = 70) +
+  scale_x_continuous(trans = 'log10') +
+  scale_fill_continuous(low="lightblue", high="#0000FF") +
+  labs(x= paste("number of variants per PGS"), y=paste("r_pearson")) +
+  theme_bw()
+print(density_p)
+
+```
+
+
+
+
+# Density and Barplot of coverage
+Again a density and barplot is made.
+```{r coverage plots}
+# create general ggplot
+p <- merged_coverage %>%
+  ggplot(mapping = aes(x = coverage_of_file01,
+                       y = coverage_of_file02))
+
+# add points to plot = scatterplot
+scatter_p <- p + 
+  geom_point() +
+  labs(x=paste("coverage of: ", reverse_string_until_pattern_func(params$coverage_input_file1)), y=paste("coverage of: ", reverse_string_until_pattern_func(params$coverage_input_file2))) +
+  theme_bw()
+
+# print(scatter_p)
+
+
+# add density2d to plot = density2d plot
+density_p <- p +
+  geom_bin2d(bins = 70) +
+  scale_fill_continuous(low="lightblue", high="#0000FF") +
+  labs(x=paste("coverage of: ",reverse_string_until_pattern_func(params$coverage_input_file1)), y=paste("coverage of: ", reverse_string_until_pattern_func(params$coverage_input_file2))) +
+  theme_bw()
+print(density_p)
+```
+
+<!--
+gather 2 columns into key value pair
+-->
+
+```{r gather coverage}
+fused_coverage <- gather(merged_coverage, key = "file", value = "coverage", 2:ncol(merged_coverage))
+```
+
+
+```{r cut_for_barplot}
+# vorlage von Lukas, er wandelt eine kontinuierliche variable in eine kategorische um, indem er sie einfach bei jedem 0.1 "schneidet"--> dies wird dann in ein neue Variable "bin" gespeichert und anschließend in dem barplot als kategorische variable auf der x-Achse geplotted!
+
+fused_coverage$bin <- cut(fused_coverage$coverage, 10, labels = c("≤ 0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9", "> 0.9"))
+```
+
+
+```{r count_of_coverage_by_threshold}
+datatable(fused_coverage)
+
+count_threshold <- fused_coverage %>% group_by(file) %>% count(bin)
+print(count_threshold)
+```
+
+
+```{r  coverage barplot}
+h <- ggplot(fused_coverage, aes(coverage))
+
+bar_p <- h + 
+  geom_bar(aes(x = bin, fill = file), position='dodge') +
+  scale_fill_manual(values = c("lightblue", "lightpink"), #name= "coverage", labels = c("1000G","HRC"))+
+    labels = c(paste(reverse_string_until_pattern_func(params$coverage_input_file1)), paste(reverse_string_until_pattern_func(params$coverage_input_file2)))) + # Edit color of columns
+ # scale_fill_discrete(name = "coverage", labels = c("file01", "file02")) # Edit legend title and labels
+  theme_bw()
+print(bar_p)
+
+
+
+```
+

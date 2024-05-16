@@ -1,0 +1,320 @@
+---
+title: "pgs-phenotype-analysis"
+author: '`r Sys.info()["user"]`'
+date: "`r Sys.Date()`"
+output:
+  rmdformats::robobook:
+    self_contained: true
+    thumbnails: false
+    lightbox: true
+    gallery: true
+    highlight: tango
+    code_folding: hide
+params:
+  input_phenotypes: "input/example.phenotypes.txt"
+  input_PGS_data: "input/example.1000genomes.scores.txt"
+  input_phenotypes_specification: "Phenotype_1,Phenotype_2,Phenotype_3"
+  input_PGS_numbers: "PGS002695,PGS002695,PGS002695"
+  input_variants_file: "input/variants.csv"
+  input_remove_neg_values: TRUE
+---
+
+
+Version: 1.0
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r packages, echo = FALSE, include=F} 
+library(tidyr) # data formatting
+library(dplyr) # data manipulation
+library(ggplot2) # various plots
+library(DT) # datatable() for aesthetic formating of tables
+library(patchwork) # combine plots into one image
+library(latex2exp) # LaTeX expressions in plots
+source("pgs-utils_jonas.R") # some functions for pgs-analysis in general
+```
+
+```{r definition of functions}
+get_unique_number_func <- function(a_data, a_column){
+  # a_column --> input as string! e.g "sample"
+  count_value <- a_data %>% 
+    select(all_of(a_column)) %>%
+    unique() %>%
+    nrow()
+  return (count_value)
+}
+
+
+
+scatterplot_func <- function(a_data, a_score, a_phenotype){
+  reg <- lm(get(a_phenotype)~get(a_score), data=a_data)
+      reg_sum <- summary(reg)
+      r2 <- round(reg_sum$r.squared, digits=3)
+      
+  plot <- ggplot(a_data, aes(y = get(a_phenotype), x = get(a_score))) +
+    geom_point(color='lightblue', size = 1, alpha=0.4) + 
+    ylab(a_phenotype) + xlab(a_score) +
+    geom_smooth(method='lm', formula= y~x, color='blue', linewidth=0.5) +
+    annotate(geom = 'text', label = paste("italic(R^2) ==", r2, " ") , parse=TRUE,  x = Inf, y = Inf, hjust = 1.1 , vjust = 1.1 ) +
+    theme_bw()
+  return(plot)
+}
+
+
+imputation_quality_histogram_func <- function(a_data, a_quality){
+  quality_count <- a_data %>% filter(a_quality >= 0.9) %>% nrow()
+  quality_count_form <- format(quality_count, big.mark= ",", scientific =FALSE)
+  
+  string_text <- paste(" $r^2 \\geq  0.9$: " , quality_count_form , "counts " ,sep=" ") # concatenate text with paste function and then use TeX function in ggplot layer "annotate"
+  
+  plot <- ggplot(a_data, aes(x=a_quality)) +
+    geom_vline(xintercept = 0.9, linetype = "dashed") +
+    geom_histogram(fill="lightblue", binwidth = 0.05) +
+    scale_x_continuous(lim = c(-0.05, NA), breaks = c(0,0.25,0.5,0.75,0.9,1.0), expand = waiver()) + 
+    xlab(TeX("imputation quality ($r^{2}$) ")) +
+    ylab("count") +
+    annotate(geom = 'text', label = TeX(string_text) , parse=FALSE, x = -Inf , y = Inf, hjust = 0 , vjust = 1.25) + # >= in unicode: \u2265    , quality_count_form, " counts"
+    theme_bw()
+  return(plot)
+}
+
+
+imputation_quality_vs_effect_weight_scatter_func <- function(a_data, a_score, a_effect_weight, a_quality){
+  
+   num_var <- variants_file_raw %>% filter(score==a_score) %>% select(all_of("include")) %>% nrow()
+      number_variants <- format(num_var, big.mark= ",", scientific =FALSE)
+      num_var_inc <-  variants_file_raw %>% filter(score==a_score) %>% select(all_of("include")) %>% filter(include == "1") %>% nrow()
+      number_variants_included <-format(num_var_inc, big.mark= ",", scientific =FALSE)
+      coverage <- round(num_var_inc/num_var*100, digits = 2)
+     
+
+    # scaling x-axis to show NA-values in plot as negative r^2
+    scale <- if  (number_variants != number_variants_included) {
+      scale_x_continuous(lim = c(-0.05 , NA), breaks = c(0,0.25,0.5,0.75,0.9,1.0)) 
+    } 
+      
+      else {
+      scale_x_continuous(lim = c(0 , NA), breaks = c(0,0.25,0.5,0.75,0.9,1.0)) 
+      } 
+    
+    data_color <- a_data %>% mutate(Color= ifelse(get(a_quality) >= 0, "blue", "red"))
+      
+      
+    plot <- ggplot(data_color, aes(y = get(a_effect_weight), x = get(a_quality), color=Color)) +
+    geom_vline(xintercept = 0.9, linetype = "dashed") +
+    geom_point(size = 1, alpha=0.2) +
+    scale_color_identity() +
+    scale +
+    ylab("effect weight") + xlab(TeX("imputation quality ($r^{2}$)")) + # hier wieder weiter mit labeln
+    annotate(geom = 'text', label = paste0(" ", number_variants_included," of ", number_variants, " variants \n (", coverage, " %)") ,  x = -Inf , y = Inf, hjust = 0 , vjust = 1.1) + 
+    theme_bw()
+  return(plot)
+    
+}    
+
+```
+
+# Analysis of phenotype traits with Polygenic Scores (PGS) 
+
+In this report a comparison between Polygenic Scores to phenotype data is created.
+
+
+```{r read phenotypes and scores}
+phenotype_file_raw <- read.csv(params$input_phenotypes)
+PGS_file_raw <- read.csv(params$input_PGS_data)
+```
+
+```{r read variants}
+variants_file_raw <- read.table(params$input_variants_file, header=TRUE, sep = ",")
+```
+ 
+# Input check
+Simple check in order to be sure if the input files are correct.
+
+Input Files:
+
+  - Phenotype File : ***`r params$input_phenotypes` *** 
+  - PGS File : ***`r params$input_PGS_data` ***
+  - Variant File : ***`r params$input_variants_file` ***
+
+  
+```{r select} 
+# only "sample ID (proband) " and input_phenotypes_specification (e.g. "measured height (BL_ku_groesse)") are selected and only when a height was actually measured
+
+phenotype_file <- phenotype_file_raw %>%
+  select("proband") %>%
+  drop_na()
+
+PGS_file <- PGS_file_raw %>%
+  select("sample")%>%
+  drop_na()
+```
+
+```{r merge samples}
+# inner join only merges those rows where in BOTH files "proband" and "sample" are present
+merge_samples <- inner_join(phenotype_file, PGS_file, by = c("proband" = "sample"))
+```
+
+# Check for sample intersection
+
+```{r count complete samples}
+number_complete_sample_phenotype_file <- phenotype_file_raw %>%
+  nrow()
+number_complete_sample_PGS_file <- PGS_file_raw %>%
+  nrow()
+```
+  
+```{r count unique samples}
+# Attention: also unique values < 0 (problematic e.g with phenotype data for height --> no negative height) are included
+number_sample_phenotype_file <- get_unique_number_func(phenotype_file, "proband")
+number_sample_PGS_file <- get_unique_number_func(PGS_file, "sample")
+```
+
+```{r intersection of samples}
+# NA deleted
+number_sample_intersection <- get_unique_number_func(merge_samples, "proband")
+```
+
+<!-- 
+
+everything from here inside loop !
+
+-->
+
+```{r length check}
+PGS_vector <-unlist(strsplit(params$input_PGS_numbers, ","))
+phenotypes_vector <-unlist(strsplit(params$input_phenotypes_specification, ","))
+if ((length(PGS_vector) != length(phenotypes_vector))){
+    stop("ERROR: number of Phenotypes and corresponding Polygenic Scores is not the same. Try again with new input parameters!")
+}
+```
+
+
+
+```{r definition of function: loop calculation of sample number, na values and intersection }
+count_values_func <- function(a_scores_file, a_phenotypes_file, a_scores, a_phenotypes){
+  # calculates NA-values in dataframe for each column separately and creates table with sum of NA-values printed  for each variable
+  
+  n = length(a_scores) # ==  length(a_phenotypes) ; because already checked earlier
+  result_count = NULL
+  
+  for (i in 1:n){
+    phenotype <- a_phenotypes[i]
+    score <- a_scores[i]
+  
+   
+    # number of unique samples
+    # sample NA's excluded, but that makes no difference, because a sample-number exists if to be regareded as a patient
+    number_sample_phenotype_file <- get_unique_number_func(a_phenotypes_file, "proband") # hard coded
+    number_sample_PGS_file <- get_unique_number_func(a_scores_file, "sample") # hard coded
+    
+    # number of NA values
+    phenotype_na_count <- sum(is.na(a_phenotypes_file %>%select(all_of(phenotype))))
+    score_na_count <- sum(is.na(a_scores_file %>%select(all_of(score))))
+    
+    
+    # number of samples after intersection
+     merge_single <- inner_join(a_phenotypes_file %>% select(all_of(c("proband", phenotype))), a_scores_file %>% select(all_of(c("sample", score))), by = c("proband" = "sample"))
+     number_sample_intersection <- get_unique_number_func(merge_single, "proband") # hard coded
+   
+     # number of sample intersection without NA values! 
+     merge_intersection_without_NA <- inner_join(a_phenotypes_file %>% select(all_of(c("proband", phenotype))), a_scores_file %>% select(all_of(c("sample", score))), by = c("proband" = "sample")) %>% drop_na()
+     number_merge_intersection_without_NA <- get_unique_number_func(merge_intersection_without_NA, "proband")
+     
+     # create table with calculated values 
+    result_count <- rbind(result_count, c(phenotype = phenotype, number_sample_phenotype_file = number_sample_phenotype_file, phenotype_na_count = phenotype_na_count, score = score, number_sample_score_file = number_sample_PGS_file ,score_na_count = score_na_count, sample_intersection = number_sample_intersection, sample_intersection_without_NA = number_merge_intersection_without_NA ))
+    
+    
+  }
+  return(result_count)
+}
+```
+
+
+```{r count values}
+datatable(count_values_func(PGS_file_raw, phenotype_file_raw, PGS_vector, phenotypes_vector))
+```
+
+
+```{r selection of score and r2  variants file}
+filter_imputation <- variants_file_raw %>% select(all_of(c("score","r2"))) %>% drop_na()
+
+```
+
+```{r selection of score, r2 and effect weight variants file}
+filter_effect_vs_quality <- variants_file_raw %>% select(all_of(c("score","r2", "effect_weight"))) %>% replace_na(list(r2 = -0.05)) # drop_na
+```
+
+
+
+
+# Plots for every Phenotype - PGS pair
+
+
+```{r plots,  echo=FALSE, include=TRUE, results='asis', warning=FALSE}
+plot_loop <- function(a_scores_file, a_phenotypes_file, a_scores, a_phenotypes, a_variants_file){
+    
+    n = length(a_scores) # ==  length(a_phenotypes) ; checked already
+    for (i in 1:n){
+      phenotype <- a_phenotypes[i]
+      score <- a_scores[i]
+      
+      # filter corresponding phenotype-pgs pair
+      filter_phenotype <- a_phenotypes_file %>% select(all_of(c("proband", phenotype))) %>% drop_na() 
+      filter_score <- a_scores_file %>% select(all_of(c("sample", score)))%>% drop_na()
+      
+      # delete all phenotype values < 0 --> negative height, BMI etc. makes no sense!
+      if (params$input_remove_neg_values == TRUE){
+        filter_phenotype <- filter_phenotype %>% filter(get(phenotype) >= 0) 
+      # for my phenotypes all values are positive! e.g Lpa concentration, height etc. --> negative values are useless and wrong 
+      }
+      merge_single <- inner_join(filter_phenotype, filter_score, by = c("proband" = "sample"))
+      
+      # filter only specific PGSxxx  and save second column (=="r2") in quality --> simpel solution (hard coded)
+      filter_imputation_per_PGS <- filter_imputation %>% filter(score==a_scores[i])
+      
+      # filter specific PGSxxx and make  effect vs quality plot!
+      filter_effect_vs_quality_per_PGS <- filter_effect_vs_quality %>% filter(score==a_scores[i])
+      
+      # calculation of coverage per PGSxxx
+      num_var <- variants_file_raw %>% filter(score==a_scores[i]) %>% select(all_of("include")) %>% nrow()
+      number_variants <- format(num_var, big.mark= ",", scientific =FALSE)
+
+      num_var_inc <-  variants_file_raw %>% filter(score==a_scores[i]) %>% select(all_of("include")) %>% filter(include == "1") %>% nrow()
+      number_variants_included <-format(num_var_inc, big.mark= ",", scientific =FALSE)
+     
+      coverage <- round(num_var_inc/num_var*100, digits = 2)
+      
+      # calculation of phenotype mean
+      calculated_phenotype_mean <- mean(a_phenotypes_file[[phenotype]], na.rm = TRUE)
+      calculated_phenotype_mean_form <- format(calculated_phenotype_mean, big.mark= ",", scientific =FALSE)
+    
+      
+    
+      
+      # create Markdown Headlines in loop 
+      cat(paste0("\n\n## ", phenotype, " - ", score, "\n\n mean = ",calculated_phenotype_mean_form )) 
+      # need linebreaks \n\n in order to work properly, also important: results == 'asis' in chunk description of this cell!
+      
+      # plotting 
+      p1 <- scatterplot_func(merge_single, score, phenotype)
+      p2 <- plot_pgs_by_decile(merge_single, score, phenotype, quantile = 0.1)
+      p3 <- imputation_quality_histogram_func(filter_imputation_per_PGS, filter_imputation_per_PGS$r2)
+      p4 <- imputation_quality_vs_effect_weight_scatter_func(filter_effect_vs_quality_per_PGS, a_scores[i], "effect_weight", "r2") # hard coded
+      p1234 <- p1 + p2 + p3 + p4 
+      # + plot_annotation(title = score, phenotype,  caption= paste0("caption ", phenotype)) 
+      
+      print(p1234)
+    }
+    
+}
+
+plot_loop(PGS_file_raw, phenotype_file_raw, PGS_vector, phenotypes_vector, variants_file_raw)
+```
+
+
+
+
+

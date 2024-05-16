@@ -1,0 +1,72 @@
+---
+title: "pop-filter"
+author: '`r Sys.info()["user"]`'
+date: "`r Sys.Date()`"
+output:
+  rmdformats::robobook:
+    self_contained: true
+    thumbnails: false
+    lightbox: true
+    gallery: true
+    highlight: tango
+    code_folding: hide
+params:
+  input_metadata: "input/pgs_all_metadata_scores.csv"
+  input_PGS_file_to_filter: "input/example.1000genomes.scores.txt"
+  output_filename: "output/example.1000genomes.scores.filtered.txt"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r  packages, echo = FALSE, include=F}
+library(tidyr)
+library(dplyr)
+library(DT)
+```
+
+
+```{r read input}
+all_meta_file <- read.csv(params$input_metadata)
+PGS_file <- read.csv(params$input_PGS_file_to_filter)
+#datatable(all_meta_file)
+#datatable(PGS_file)
+
+```
+
+
+# Filter of Ancestry
+Filter only those PGS_score that have a European Ancestry portion ("Ancestry Distribution (%) - Source of Variant Associations (GWAS)") and write a filtered_output file.
+
+```{r european filter}
+
+formated_all_meta_file <- all_meta_file %>% 
+  rename(PGS_number = Polygenic.Score..PGS..ID, Ancestry_Dist = Ancestry.Distribution.......Source.of.Variant.Associations..GWAS.) %>%
+  select(PGS_number, Ancestry_Dist) %>%
+  filter(grepl("European", Ancestry_Dist))
+
+
+PGS_filtered <- PGS_file %>% select("sample",any_of(formated_all_meta_file$PGS_number))
+
+write.table(PGS_filtered, params$output_filename, row.names=FALSE, sep=",")
+
+```
+
+
+```{r number of PGS and number of european PGS}
+number_of_PGS <- PGS_file %>%
+  nrow()
+
+number_of_european_PGS <- formated_all_meta_file %>% 
+  nrow()
+
+
+# create table
+result_count = NULL
+result_count <- rbind(result_count, c(number_of_PGS = number_of_PGS, number_of_european_PGS = number_of_european_PGS))
+
+datatable(result_count)
+```
+
